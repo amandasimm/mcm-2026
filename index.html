@@ -194,6 +194,7 @@
   }
 
   .btn-export:hover { background: var(--gold); color: var(--paper); }
+  .btn-export:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* ── WEEK BLOCKS ── */
   .week-block {
@@ -533,6 +534,9 @@
   <button class="filter-btn" data-filter="Peak">Peak</button>
   <button class="filter-btn" data-filter="Taper">Taper</button>
   <div class="controls-right">
+    <button class="btn-export" id="btn-toggle-edit" style="border-color:#5479EA;color:#5479EA;">Edit mode</button>
+    <button class="btn-export" id="btn-save" style="border-color:#4a7c59;color:#4a7c59;" disabled>Save changes</button>
+    <button class="btn-export" id="btn-reset" style="border-color:#E34FD7;color:#E34FD7;">Reset plan</button>
     <button class="btn-export" id="btn-export-csv">↓ Export CSV</button>
     <button class="btn-export" id="btn-clear" style="border-color:#E34FD7;color:#E34FD7;">Clear all data</button>
   </div>
@@ -560,10 +564,23 @@ const PLAN = [{"Week":"1","Date Range":"Jun 8\u201314","Phase":"Base","Day":"Mon
 
 const STORAGE_KEY = 'mcm_log_2026';
 const RACE_DATE = new Date('2026-10-26');
+let editMode = false;
+let activeFilter = 'all';
+let planDirty = false;
 
 // ── Storage ──
 function loadData() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (stored && typeof stored === 'object') {
+      stored.logs = stored.logs || {};
+      stored.planOverrides = stored.planOverrides || {};
+      return stored;
+    }
+    return { logs: {}, planOverrides: {} };
+  } catch {
+    return { logs: {}, planOverrides: {} };
+  }
 }
 function saveData(data) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -614,6 +631,7 @@ function currentWeekNum() {
 
 // ── Render ──
 function render(filter) {
+  activeFilter = filter;
   const data = loadData();
   const weeks = groupByWeek(PLAN);
   const container = document.getElementById('plan-container');
@@ -632,9 +650,10 @@ function render(filter) {
     // compute weekly totals
     let wPrescribed = 0, wActual = 0;
     week.days.forEach(d => {
-      wPrescribed += parseFloat(d['Prescribed Miles']) || 0;
       const key = rowKey(wNum, d.Day);
-      const saved = data[key] || {};
+      const planEdit = data.planOverrides[key] || {};
+      wPrescribed += parseFloat(planEdit.prescribedMiles ?? d['Prescribed Miles']) || 0;
+      const saved = data.logs[key] || {};
       if (saved.miles) { wActual += parseFloat(saved.miles) || 0; }
     });
     totalPrescribed += wPrescribed;
@@ -643,7 +662,7 @@ function render(filter) {
     // filter logic
     if (filter === 'current' && !isCurrentWeek) return;
     if (filter === 'logged') {
-      const hasAny = week.days.some(d => { const s = data[rowKey(wNum,d.Day)]||{}; return s.miles||s.pace||s.rpe||s.notes; });
+      const hasAny = week.days.some(d => { const s = data.logs[rowKey(wNum,d.Day)]||{}; return s.miles||s.pace||s.rpe||s.notes; });
       if (!hasAny) return;
     }
     if (['Base','Build','Peak','Taper'].includes(filter) && !phase.startsWith(filter)) return;
@@ -681,24 +700,33 @@ function render(filter) {
         </div>
         ${week.days.map(d => {
           const key = rowKey(wNum, d.Day);
-          const saved = data[key] || {};
-          const [tagClass, tagLabel] = workoutTag(d.Workout);
+          const saved = data.logs[key] || {};
+          const planEdit = data.planOverrides[key] || {};
+          const workoutText = planEdit.workout ?? d.Workout;
+          const [tagClass, tagLabel] = workoutTag(workoutText);
           const isRest = tagClass === 'rest';
           const isRace = tagClass === 'race';
           const rpeVal = saved.rpe || '';
 
           if (saved.miles) workoutsLogged++;
           if (saved.rpe) { rpeSum += parseInt(saved.rpe); rpeCount++; }
-          if (d.Workout.toLowerCase().includes('long') || d.Workout.toLowerCase().includes('marathon')) {
+          if (workoutText.toLowerCase().includes('long') || workoutText.toLowerCase().includes('marathon')) {
             const a = parseFloat(saved.miles) || 0;
             if (a > longPeak) longPeak = a;
           }
 
           return `<div class="day-row ${isRest?'rest-day':''} ${isRace?'race-day':''}" data-key="${key}">
             <div class="day-col col-day"><span class="dayname">${d.Day}</span><span class="daydate">${d.Date}</span></div>
-            <div class="day-col col-workout"><span class="workout-tag tag-${tagClass}">${tagLabel}</span>${isRace ? d.Workout : d.Workout}</div>
-            <div class="day-col col-pace">${d['Pace / Effort Target']}</div>
-            <div class="day-col col-prescribed">${d['Prescribed Miles'] === '0' ? '—' : d['Prescribed Miles'] + ' mi'}</div>
+            <div class="day-col col-workout">
+          <span class="workout-tag tag-${tagClass}">${tagLabel}</span>
+          <textarea class="plan-edit" data-key="${key}" data-field="workout" ${editMode ? '' : 'readonly'}>${planEdit.workout ?? d.Workout}</textarea>
+        </div>
+            <div class="day-col col-pace">
+              <textarea class="plan-edit" data-key="${key}" data-field="paceTarget" ${editMode ? '' : 'readonly'}>${planEdit.paceTarget ?? d['Pace / Effort Target']}</textarea>
+            </div>
+            <div class="day-col col-prescribed">
+              <input type="number" step="0.1" min="0" class="plan-edit" data-key="${key}" data-field="prescribedMiles" value="${planEdit.prescribedMiles ?? d['Prescribed Miles']}" ${editMode ? '' : 'readonly'} />
+            </div>
             <div class="day-col col-input"><input type="number" step="0.1" min="0" placeholder="0.0" value="${saved.miles||''}" class="${saved.miles?'filled':''}" data-key="${key}" data-field="miles" ${isRest&&!isRace?'':''}/></div>
             <div class="day-col col-input"><input type="text" placeholder="0:00/mi" value="${saved.pace||''}" class="${saved.pace?'filled':''}" data-key="${key}" data-field="pace"/></div>
             <div class="day-col col-input">
@@ -746,25 +774,35 @@ function render(filter) {
 }
 
 function attachInputListeners() {
-  const data = loadData();
+  const stored = loadData();
+  const logs = stored.logs || {};
 
-  document.querySelectorAll('input[data-key], textarea[data-key], select[data-key]').forEach(el => {
+  document.querySelectorAll('input[data-key][data-field], textarea[data-key][data-field], select[data-key][data-field]').forEach(el => {
+    const field = el.dataset.field;
+    const key = el.dataset.key;
+
+    if (['workout','paceTarget','prescribedMiles'].includes(field)) {
+      el.addEventListener('input', () => {
+        planDirty = true;
+        document.getElementById('btn-save').disabled = !editMode;
+      });
+      return;
+    }
+
     el.addEventListener('change', () => {
-      const key = el.dataset.key;
-      const field = el.dataset.field;
-      if (!data[key]) data[key] = {};
-      data[key][field] = el.value;
+      if (!logs[key]) logs[key] = {};
+      logs[key][field] = el.value;
       el.classList.toggle('filled', !!el.value);
-      // RPE color
       if (field === 'rpe') {
         el.className = 'rpe-input' + (el.value ? ' rpe-'+el.value : '');
       }
-      saveData(data);
+      stored.logs = logs;
+      saveData(stored);
     });
   });
 }
 
-// ── Filter buttons ──
+// ── Filter buttons ┎
 document.querySelectorAll('.filter-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
@@ -773,16 +811,56 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
   });
 });
 
+document.getElementById('btn-toggle-edit').addEventListener('click', () => {
+  editMode = !editMode;
+  document.getElementById('btn-toggle-edit').textContent = editMode ? 'Exit edit mode' : 'Edit mode';
+  document.getElementById('btn-toggle-edit').classList.toggle('active', editMode);
+  document.getElementById('btn-save').disabled = !editMode;
+  render(activeFilter);
+});
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  if (!editMode) return;
+  const data = loadData();
+  const overrides = data.planOverrides || {};
+
+  document.querySelectorAll('.plan-edit[data-key]').forEach(el => {
+    const key = el.dataset.key;
+    const field = el.dataset.field;
+    if (!overrides[key]) overrides[key] = {};
+    overrides[key][field] = el.value;
+  });
+
+  data.planOverrides = overrides;
+  saveData(data);
+  planDirty = false;
+  document.getElementById('btn-save').disabled = false;
+  render(activeFilter);
+});
+
+// ── Reset plan ──
+document.getElementById('btn-reset').addEventListener('click', () => {
+  if (!confirm('Restore the original training plan? This will remove any saved plan edits.')) return;
+  const data = loadData();
+  data.planOverrides = {};
+  saveData(data);
+  planDirty = false;
+  render(activeFilter);
+});
+
 // ── Export CSV ──
 document.getElementById('btn-export-csv').addEventListener('click', () => {
   const data = loadData();
   const header = ['Week','Date Range','Phase','Day','Date','Workout','Prescribed Miles','Pace Target','Actual Miles','Actual Pace','RPE','Notes'];
   const rows = PLAN.map(r => {
     const key = rowKey(r.Week, r.Day);
-    const saved = data[key] || {};
+    const saved = data.logs[key] || {};
+    const planEdit = data.planOverrides[key] || {};
     return [
       r.Week, r['Date Range'], r.Phase, r.Day, r.Date,
-      r.Workout, r['Prescribed Miles'], r['Pace / Effort Target'],
+      planEdit.workout ?? r.Workout,
+      planEdit.prescribedMiles ?? r['Prescribed Miles'],
+      planEdit.paceTarget ?? r['Pace / Effort Target'],
       saved.miles||'', saved.pace||'', saved.rpe||'', (saved.notes||'').replace(/\n/g,' ')
     ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(',');
   });
